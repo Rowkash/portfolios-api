@@ -1,0 +1,165 @@
+services:
+  backend:
+    container_name: 'nestjs-sequelize-backend'
+    build:
+      context: ./backend
+      target: ${CONTEXT:-development}
+    env_file:
+      - ${ENV_FILE:-.development.env}
+    volumes:
+      - ${VOLUMES:-./backend:/app}
+      - /app/node_modules
+    restart: always
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - nestjs-sequelize
+
+  postgres:
+    container_name: 'nestjs-sequelize-postgres'
+    image: postgres:latest
+    env_file:
+      - ${ENV_FILE:-.development.env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      PG_DATA: /var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - nestjs-sequelize
+
+  redis:
+    container_name: 'nestjs-sequelize-redis'
+    image: redis:latest
+    env_file:
+      - ${ENV_FILE:-.development.env}
+    volumes:
+      - redis-data:/data/redis
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - nestjs-sequelize
+
+  minio:
+    container_name: 'nestjs-sequelize-minio'
+    image: bitnami/minio:latest
+    command: server /bitnami/minio/data --console-address ":9001"
+    env_file:
+      - ${ENV_FILE:-.development.env}
+    volumes:
+      - minio-data:/bitnami/minio/data
+    healthcheck:
+      test: [ "CMD", "curl", "-I", "http://minio:9000/minio/health/live" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - nestjs-sequelize
+
+  elasticsearch:
+    image: elasticsearch:9.1.4
+    container_name: "nestjs-sequelize-elasticsearch"
+    environment:
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+    env_file:
+      - ${ENV_FILE:-.development.env}
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+      - ./services-configs/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "-u", "${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD}", "http://elasticsearch:9200/_cluster/health?wait_for_status=yellow&timeout=50s" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - nestjs-sequelize
+
+  kibana:
+    container_name: "nestjs-sequelize-kibana"
+    image: kibana:9.1.4
+    env_file:
+      - ${ENV_FILE:-.development.env}
+    volumes:
+      - ./services-configs/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://kibana:5601/kibana/api/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - nestjs-sequelize
+
+  fluentd:
+    container_name: "nestjs-sequelize-fluent"
+    build:
+      context: services-configs/fluentd
+    user: root
+    env_file:
+      - ${ENV_FILE:-.development.env}
+    volumes:
+      - ./services-configs/fluentd/conf:/fluentd/etc:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    networks:
+      - nestjs-sequelize
+
+  nginx:
+    container_name: "nestjs-sequelize-nginx"
+    image: nginx
+    ports:
+      - "8080:8080"
+    restart: always
+    volumes:
+      - ./services-configs/nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      backend:
+        condition: service_started
+      minio:
+        condition: service_healthy
+      kibana:
+        condition: service_healthy
+    networks:
+      - nestjs-sequelize
+
+networks:
+  nestjs-sequelize:
+    driver: bridge
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  minio-data:
+    driver: local
+  elasticsearch-data:
+    driver: local
